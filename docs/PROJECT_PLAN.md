@@ -112,7 +112,7 @@ See [Freight Invoice Field Research](FREIGHT_FIELD_RESEARCH.md) for the source r
 
 Represent charges as an extensible repeated line-item collection with source code/description, normalized category, amount/currency, and optional quantity, unit, rate, tax, discount, or credit attributes. Preserve unknown carrier codes and raw extracted values alongside normalized values, confidence, and evidence. Do not require linehaul and fuel surcharge on every invoice or force all extracted amounts to two decimals before reconciliation. Treat field tiers as pack policy rather than universal X12 requirements; validate the profile against representative carrier invoices before freezing it and do not claim full EDI-210 compliance without a separate mapping review.
 
-Rules: PO exists for tenant; carrier and shipment references match contracted data where available; surcharge is within contracted cap; line extensions and subtotal/total reconcile using Decimal within $0.05; currency/tax semantics are explicit.
+Rules: match a tenant-configured shipment reference and carrier identity where required by the workflow; compare available charge categories against contracted rates/caps; reconcile line extensions and invoice totals using Decimal with currency-aware precision/tolerance; apply explicit currency, tax, credit, and discount semantics. Rule requirements are pack/tenant configuration, not assumptions that every invoice contains a PO, BOL, fuel surcharge, or linehaul line.
 
 ### Vendor compliance pack
 
