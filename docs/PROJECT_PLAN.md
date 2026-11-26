@@ -204,12 +204,13 @@ These are recommended MVP defaults, not accepted decisions. Record each as an in
 
 ## 13. Remaining decisions before contract freeze
 
-- Confirm evidence metadata retention and deletion audit details; raw PDF access and 30-day TTL are proposed defaults.
-- Review [freight field research](FREIGHT_FIELD_RESEARCH.md) against representative LTL/TL invoices; confirm PO-primary/BOL-fallback coverage and currency-aware comparison tolerance.
-- Confirm severity taxonomy and OPS_ANALYST / OPS_MANAGER / TENANT_ADMIN permissions, including override review controls.
+The following details remain open for maintainer review; the defaults above are proposed and sufficient to draft implementation stories:
+- Confirm evidence metadata retention/deletion audit details beyond the 30-day raw PDF TTL and analyst+ access.
+- Validate PO-primary/BOL-fallback against representative LTL/TL invoices; confirm currency-aware comparison tolerance.
+- Confirm severity taxonomy and OPS_ANALYST / OPS_MANAGER / TENANT_ADMIN permissions, including any second-person review for overrides.
 - Confirm exact event compatibility behavior for HUMAN_OVERRIDE EventVerified and DocumentFailed with DLQ.
-- Define webhook DNS rebinding/redirect protections and whether the stored endpoint secret rotates.
-- Confirm pack version availability/retention policy for historical replay.
+- Define webhook DNS rebinding/redirect protections and endpoint-secret rotation.
+- Confirm pack-version availability/retention for historical replay.
 - Confirm master-data upsert uniqueness key and before/after audit retention.
 
 ## 14. Delivery plan
