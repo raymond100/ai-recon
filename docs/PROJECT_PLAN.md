@@ -81,7 +81,7 @@ Transient worker errors retry with bounded attempts. After three failed attempts
 - FR-8 Audit: record correlation, schema/pack/rules versions, rule outcomes, evidence references, actor actions, and timestamps in append-only records. Tenant-admin/master-data upserts retain before/after snapshots.
 - FR-9 Triage: exception retrieval is tenant-scoped and supports status/domain filters.
 - FR-10 Resolution: enforce role authorization, mandatory note, explicit state transitions, and idempotent request behavior.
-- FR-11 Delivery: only approved outcomes are eligible; use idempotency keys and record attempts.
+- FR-11 Delivery: only EventVerified outcomes tagged AUTO_PASS or HUMAN_OVERRIDE are eligible; use idempotency keys and record attempts. Rejections are never delivered.
 - FR-12 Resilience: bounded retries and DLQ behavior are explicit; unsupported event versions fail safely.
 - FR-13 Packs/master data: domain behavior is pack-configured; tenant configuration governs allowed domains. MVP master data supports idempotent POST /master-records/{domain_id}/upsert for TENANT_ADMIN/OPS_MANAGER; `make seed` uses the same path/semantics. Each upsert records MASTER_DATA_UPSERTED with before/after JSONB snapshots.
 
@@ -136,7 +136,6 @@ Initial events and payload intent:
 - EventVerified: document_id, decision_id, ruleset/pack version, evaluated_at, rule outcomes, evidence references, decision_origin=AUTO_PASS|HUMAN_OVERRIDE; a human override outcome references BreakOverridden and the original decision.
 - BreakDetected: document_id, exception_id, decision_id, violation codes, rule IDs, field/evidence references, detected_at.
 - BreakOverridden: exception_id, original_decision_id, resolution_id, reviewer identity/role, severity, resolution_note, resolved_at, idempotency key. This is an immutable human override record; it never deletes or rewrites BreakDetected.
-- EventVerified: for automated passes, includes document_id, decision_id, ruleset/pack version and evaluated_at. For an approved override, emit a separate verification outcome referencing BreakOverridden and the original decision; preserve decision_origin=AUTO_PASS|HUMAN_OVERRIDE so downstream consumers distinguish the paths.
 - ExceptionRejected: exception_id, decision_id, resolution_id, reviewer identity/role, resolution_note, resolved_at. Does not trigger downstream delivery.
 - DocumentFailed: document_id, error_code, stage, safe reason, failed_at. Emit after terminal processing failure and write corresponding message to stream:dead_letter; update document state to FAILED_PROCESSING.
 
