@@ -63,7 +63,7 @@ External identity provider (including Keycloak), cloud hosting/managed infrastru
 1. Analyst lists tenant-scoped exceptions with failed rules, referenced evidence, and a concise explanation.
 2. Authorized reviewer approves or rejects with a non-empty resolution note.
 3. Resolution is an explicit human override of the automated decision; it does not rewrite the original evaluation. Actor, decision, note, and timestamp are appended to the audit trail.
-4. Approval emits ManuallyApproved and makes the outcome eligible for downstream delivery. Rejection emits ExceptionRejected and does not trigger delivery. A future correct-and-rerun workflow is out of MVP scope.
+4. Approval emits BreakOverridden and a distinct EventVerified tagged decision_origin=HUMAN_OVERRIDE, making the outcome eligible for downstream delivery while preserving the original BreakDetected. Rejection emits ExceptionRejected and does not trigger delivery. A future correct-and-rerun workflow is out of MVP scope.
 
 ### Recover from failure
 Transient worker errors retry with bounded attempts. After three failed attempts, poison messages go to stream:dead_letter with correlation and safe error metadata. Failures never silently become verified outcomes.
@@ -106,7 +106,11 @@ Client → Ingestion Gateway → Redis Streams → Extraction Worker → Redis S
 
 Services communicate asynchronously and never import another service implementation. Event changes are additive when possible; breaking changes require a new schema version and rollout plan.
 
-## 9. Domain packs
+## 9. Service design documents
+
+Service boundaries are elaborated in [docs/design](design/README.md): shared contracts, Ingestion Gateway, Extraction Worker, Reconciliation Engine, and Triage & Ops. Treat these as the service-level design baseline; review cross-service contracts together before implementation.
+
+## 10. Domain packs
 
 ### Freight invoice pack — proposed MVP extraction fields
 
@@ -122,14 +126,14 @@ Fields: vendor identity, policy type/number, effective/expiration dates, GL cove
 
 Rules: policy valid through project end; GL coverage at least $2M; work order does not exceed tenant-scoped remaining budget.
 
-## 10. Frozen event and state contract proposal — requires maintainer sign-off
+## 11. Frozen event and state contract proposal — requires maintainer sign-off
 
 Common envelope, schema version 1.0: event_id, event_type, occurred_at, correlation_id, retry_count, tenant_id, immutable security_context, payload, and producer metadata. Consumers validate version/type before processing. Security context is established at ingestion and propagated; downstream services do not accept payload tenant overrides.
 
 Initial events and payload intent:
 - DocumentUploaded: document_id, sha256, storage_ref, domain_id, submitted_at.
 - EventNormalized: document_id, domain_id, schema_version, ruleset_version requested/active, overall_confidence, normalized fields; each field has value, confidence, source_quote, and evidence_id.
-- EventVerified: document_id, decision_id, ruleset_version, evaluated_at, rule outcomes, evidence references.
+- EventVerified: document_id, decision_id, ruleset/pack version, evaluated_at, rule outcomes, evidence references, decision_origin=AUTO_PASS|HUMAN_OVERRIDE; a human override outcome references BreakOverridden and the original decision.
 - BreakDetected: document_id, exception_id, decision_id, violation codes, rule IDs, field/evidence references, detected_at.
 - BreakOverridden: exception_id, original_decision_id, resolution_id, reviewer identity/role, severity, resolution_note, resolved_at, idempotency key. This is an immutable human override record; it never deletes or rewrites BreakDetected.
 - EventVerified: for automated passes, includes document_id, decision_id, ruleset/pack version and evaluated_at. For an approved override, emit a separate verification outcome referencing BreakOverridden and the original decision; preserve decision_origin=AUTO_PASS|HUMAN_OVERRIDE so downstream consumers distinguish the paths.
@@ -140,12 +144,12 @@ Initial document lifecycle: RECEIVED → EXTRACTION_PENDING → EXTRACTING → N
 
 This section is a proposed contract baseline, not a claim that schemas are implemented. Resolve open contract issues and record ADRs before Phase 1 begins.
 
-## 11. Data, security, and threat model
+## 12. Data, security, and threat model
 
 - Tenant ID is established at the trust boundary and carried in immutable context; every tenant-owned table and query is tenant-scoped. Tenant configuration is authoritative for allowed_domains; client domain mismatch fails with 403 and never dynamically loads a pack. Evaluate PostgreSQL row-level security as defense in depth after considering pooling/context propagation.
 - Audit records are append-only at the application boundary; database roles should prevent routine update/delete. Protect integrity with restricted DB credentials, backups, and a documented tamper-detection/retention approach.
 - API keys are stored hashed or managed outside source and never logged.
-- Raw document storage, retention, deletion, encryption at rest, and access policy must be decided before production use.
+- Raw PDFs use the proposed MVP 30-day TTL, encrypted storage, and authenticated tenant-scoped OPS_ANALYST+ access. Define deletion audit and evidence metadata retention before production use.
 - Source quotes may contain sensitive data; restrict access and avoid placing full excerpts in logs.
 
 Threat scenarios and required mitigations to plan/test:
@@ -156,7 +160,7 @@ Threat scenarios and required mitigations to plan/test:
 5. Malformed/replayed events: validate envelope/version, enforce idempotency, scope by tenant, and bound retries/DLQ.
 6. Sensitive evidence exposure: role-check exception detail access, minimize excerpts, redact logs, and define retention/deletion behavior.
 
-## 12. Proposed ADRs for review before implementation
+## 13. Proposed ADRs for review before implementation
 
 These are recommended MVP defaults, not accepted decisions. Record each as an individual ADR with context, options, decision, consequences, and status Proposed until the maintainer signs off.
 
@@ -202,7 +206,7 @@ These are recommended MVP defaults, not accepted decisions. Record each as an in
 - Consequence: provider-specific code stays in extraction/triage adapters and is replaceable without changing the deterministic engine.
 - Status: Proposed; select provider configuration and decide timeout/cost defaults before the extraction story is Ready.
 
-## 13. Remaining decisions before contract freeze
+## 14. Remaining decisions before implementation design approval
 
 The following details remain open for maintainer review; the defaults above are proposed and sufficient to draft implementation stories:
 - Confirm evidence metadata retention/deletion audit details beyond the 30-day raw PDF TTL and analyst+ access.
@@ -213,7 +217,7 @@ The following details remain open for maintainer review; the defaults above are 
 - Confirm pack-version availability/retention for historical replay.
 - Confirm master-data upsert uniqueness key and before/after audit retention.
 
-## 14. Delivery plan
+## 15. Delivery plan
 
 Phase 0 — Planning/design gate: review this plan, resolve blocking decisions, write concise ADRs, freeze event/confidence/evidence/domain schemas and rule grammar, define threat model and golden corpus. No product implementation starts until these contracts are reviewed.
 
@@ -229,7 +233,7 @@ Phase 5 — Triage/resolution/delivery: exception APIs, explanation with rule/ev
 
 Phase 6 — CI/E2E/demo: lint, strict typing, unit/integration CI, synthetic PDFs, mocked LLM, pass/break/low-confidence/manual override/rejection/downstream E2E, run/reset/demo/troubleshooting docs.
 
-## 15. Story quality, readiness, and done
+## 16. Story quality, readiness, and done
 
 Each GitHub story states user/value, scope, assumptions, dependencies, observable acceptance criteria, and out-of-scope notes. Keep stories small and reviewable. Use consistent type/area/priority labels, milestones for delivery phases, and the GitHub Project for status/priority/dependencies.
 
@@ -237,7 +241,7 @@ Ready: value clear; boundaries/dependencies known; acceptance testable; security
 
 Done: acceptance criteria pass; lint/type checks pass; behavior and failure tests exist; tenant scoping/audit addressed; docs/contracts updated; service isolation preserved; reconciliation has no LLM dependency; failure behavior is observable.
 
-## 16. Story map
+## 17. Story map
 
 ### Foundation and contracts
 - As a developer, I want a Python 3.12+/uv monorepo with Apache-2.0 and strict tooling so changes are reproducible and maintainable.
