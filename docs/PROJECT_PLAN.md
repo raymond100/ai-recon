@@ -110,11 +110,11 @@ Services communicate asynchronously and never import another service implementat
 
 ### Freight invoice pack — proposed MVP extraction fields
 
-See [Freight Invoice Field Research](FREIGHT_FIELD_RESEARCH.md) for the source review and proposed field semantics. In brief: invoice number, invoice date, total amount, and currency form the core financial identity; carrier identity should resolve to a tenant carrier record, preferring SCAC where present. Model BOL, shipment ID, PRO/carrier reference, load, and PO as distinct typed references, with field requirements determined by the tenant's matching rules. Keep shipper, consignee, bill-to, origin, and destination as role-based party/location structures; date fields carry their business qualifier.
+See [Freight Invoice Field Research](FREIGHT_FIELD_RESEARCH.md) for source review and the proposed LTL/TL field profile. Core financial identity is invoice number/date, total amount, and ISO 4217 currency; carrier must resolve to a tenant carrier identity, preferring SCAC when present. Use `po_number` as the required primary lookup key and `bol_number` as the fallback; if both are absent, emit `MISSING_SHIPMENT_REFERENCE`. Preserve shipment ID, PRO, load, and other references separately. Keep parties and locations role-based, and dates qualified by business meaning.
 
-Represent charges as an extensible repeated line-item collection with source code/description, normalized category, amount/currency, and optional quantity, unit, rate, tax, discount, or credit attributes. Preserve unknown carrier codes and raw extracted values alongside normalized values, confidence, and evidence. Do not require linehaul and fuel surcharge on every invoice or force all extracted amounts to two decimals before reconciliation. Treat field tiers as pack policy rather than universal X12 requirements; validate the profile against representative carrier invoices before freezing it and do not claim full EDI-210 compliance without a separate mapping review.
+Represent charges as an extensible repeated line-item collection containing source code/description, normalized category, amount/currency, and optional quantity, unit, rate, tax, discount, or credit attributes. Preserve unknown codes, raw values, confidence, and structured evidence. The simplified LTL/TL summary may expose `base_freight`, `fuel_surcharge`, `accessorials[]`, `tax_amount`, and `total_amount`, all Decimal. Do not assume every invoice contains each category or force all extracted amounts to two decimal places before reconciliation. These are product-pack requirements, not universal X12 requirements; do not claim full EDI-210 compliance without a separate mapping review.
 
-Rules: match a tenant-configured shipment reference and carrier identity where required by the workflow; compare available charge categories against contracted rates/caps; reconcile line extensions and invoice totals using Decimal with currency-aware precision/tolerance; apply explicit currency, tax, credit, and discount semantics. Rule requirements are pack/tenant configuration, not assumptions that every invoice contains a PO, BOL, fuel surcharge, or linehaul line.
+Rules: require PO match, falling back to BOL match; carrier and available charge categories are compared against tenant master/rate data. Reconcile line extensions and invoice totals using Decimal with explicit currency precision/tolerance and tax, credit, and discount semantics.
 
 ### Vendor compliance pack
 
@@ -142,7 +142,7 @@ This section is a proposed contract baseline, not a claim that schemas are imple
 
 ## 11. Data, security, and threat model
 
-- Tenant ID is established at the trust boundary and carried in immutable context; every tenant-owned table and query is tenant-scoped. Evaluate PostgreSQL row-level security as defense in depth after considering pooling/context propagation.
+- Tenant ID is established at the trust boundary and carried in immutable context; every tenant-owned table and query is tenant-scoped. Tenant configuration is authoritative for allowed_domains; client domain mismatch fails with 403 and never dynamically loads a pack. Evaluate PostgreSQL row-level security as defense in depth after considering pooling/context propagation.
 - Audit records are append-only at the application boundary; database roles should prevent routine update/delete. Protect integrity with restricted DB credentials, backups, and a documented tamper-detection/retention approach.
 - API keys are stored hashed or managed outside source and never logged.
 - Raw document storage, retention, deletion, encryption at rest, and access policy must be decided before production use.
