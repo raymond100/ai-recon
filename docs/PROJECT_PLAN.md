@@ -43,6 +43,7 @@ Also instrument field confidence distribution, exception rate by rule, stage lat
 - Freight invoice and vendor compliance packs.
 - Tenant-scoped master data and append-only decision/resolution audit.
 - Human resolution API and approved-outcome webhook flow; local mock receiver is sufficient.
+- Freight-pack MVP is scoped to LTL/TL; tenant-authorized domain selection; deterministic upload limits and raw retention defaults.
 - CI, unit/integration tests, synthetic fixtures, and an end-to-end demo.
 - Seeded master data plus a minimal tenant-scoped CLI/import or admin API upsert path for pilot corrections; no full CRUD UI.
 
@@ -53,8 +54,8 @@ External identity provider (including Keycloak), cloud hosting/managed infrastru
 
 ### Submit and reconcile
 1. Client submits a PDF and domain_id with X-API-Key.
-2. Gateway authenticates, derives immutable SecurityContext, computes SHA-256, stores the raw document, and returns a stable document ID.
-3. Gateway emits DocumentUploaded. Extraction parses text and returns schema-validated facts, each with field confidence and evidence.
+2. Gateway authenticates, derives immutable SecurityContext, verifies requested domain_id against the tenant's allowed_domains (mismatch fails with 403), validates PDF limits (15 MB and 25 pages), computes SHA-256, stores the raw document with a 30-day TTL, and returns a stable document ID. Domain and pack version are pinned at ingestion.
+3. Gateway emits DocumentUploaded with pinned domain/pack version. Extraction parses text and returns schema-validated facts, each with field confidence and evidence.
 4. Reconciliation applies the confidence gate: any required field below 0.85 produces LOW_CONFIDENCE_EXTRACTION before business rules. Otherwise it loads tenant-scoped master data and evaluates deterministic rules.
 5. Passing records emit EventVerified; violations emit BreakDetected. Both decisions and rule versions are audited.
 
@@ -71,17 +72,18 @@ Transient worker errors retry with bounded attempts. After three failed attempts
 
 - FR-1 Authentication: API key maps to tenant, actor, actor type, and role; payload tenant IDs cannot override trusted context.
 - FR-2 Idempotency: duplicate file hash uploads within a tenant do not create duplicate processing outcomes.
-- FR-3 Extraction: active pack schema controls structured output; every required extracted field carries value, confidence, and source evidence.
+- FR-3 Extraction: tenant configuration is authoritative for allowed domains; a client-requested domain outside allowed_domains fails fast with 403 and cannot dynamically load a pack. Pin domain and pack version at ingestion. Every required extracted field carries value, confidence, and structured evidence.
+- FR-3a Upload policy: PDF <= 15 MB and <= 25 pages; reject oversized input with 413 before extraction. Raw PDF TTL is 30 days; evidence metadata/quotes are retained under tenant-scoped access and configured privacy policy.
 - FR-4 Confidence: every required field has confidence in [0,1]. overall_confidence is the minimum confidence among required fields. If any required field or overall_confidence is below 0.85, emit LOW_CONFIDENCE_EXTRACTION and do not run business rules. Optional-field confidence is retained but does not independently block reconciliation unless a rule requires that field.
-- FR-5 Evidence: source_quote is required for each extracted field used by reconciliation; a fired rule references the field IDs/evidence IDs it evaluated. Quotes are short excerpts, not free-standing untraceable prose.
+- FR-5 Evidence: each extracted field has structured evidence {quote, page} plus evidence_id; rule results reference the evidence used. Restrict raw-PDF download to OPS_ANALYST+ through authenticated, tenant-scoped access; never expose storage references as public URLs. Raw PDFs expire after 30 days, with deletion policy and audit records defined.
 - FR-6 Determinism: same normalized payload, master-data snapshot, and rules version yield the same decision.
 - FR-7 Isolation: every database lookup and mutation is scoped by trusted tenant_id.
-- FR-8 Audit: record correlation, schema/rules versions, rule outcomes, evidence references, actor actions, and timestamps in append-only records.
+- FR-8 Audit: record correlation, schema/pack/rules versions, rule outcomes, evidence references, actor actions, and timestamps in append-only records. Tenant-admin/master-data upserts retain before/after snapshots.
 - FR-9 Triage: exception retrieval is tenant-scoped and supports status/domain filters.
 - FR-10 Resolution: enforce role authorization, mandatory note, explicit state transitions, and idempotent request behavior.
 - FR-11 Delivery: only approved outcomes are eligible; use idempotency keys and record attempts.
 - FR-12 Resilience: bounded retries and DLQ behavior are explicit; unsupported event versions fail safely.
-- FR-13 Packs/master data: domain behavior is pack-configured; MVP master data is seeded and can be tenant-safely upserted through a documented script/CLI or minimal API.
+- FR-13 Packs/master data: domain behavior is pack-configured; tenant configuration governs allowed domains. MVP master data supports idempotent POST /master-records/{domain_id}/upsert for TENANT_ADMIN/OPS_MANAGER; `make seed` uses the same path/semantics. Each upsert records MASTER_DATA_UPSERTED with before/after JSONB snapshots.
 
 ## 7. Non-functional requirements
 
@@ -90,7 +92,7 @@ Transient worker errors retry with bounded attempts. After three failed attempts
 - Reliability: idempotent consumers and side effects; bounded retries; observable DLQ.
 - Traceability: propagate correlation_id through API, events, persistence, logs, and callbacks.
 - Maintainability: service isolation, strict typing, lint/format, clear interfaces.
-- Privacy: synthetic demo documents only; avoid raw document text and credentials in logs; define retention before production use.
+- Privacy: synthetic demo documents only; avoid raw document text and credentials in logs; raw PDFs have a 30-day TTL, authenticated tenant-scoped access, and deletion audit.
 
 ## 8. Architecture and boundaries
 
@@ -129,8 +131,10 @@ Initial events and payload intent:
 - EventNormalized: document_id, domain_id, schema_version, ruleset_version requested/active, overall_confidence, normalized fields; each field has value, confidence, source_quote, and evidence_id.
 - EventVerified: document_id, decision_id, ruleset_version, evaluated_at, rule outcomes, evidence references.
 - BreakDetected: document_id, exception_id, decision_id, violation codes, rule IDs, field/evidence references, detected_at.
-- ManuallyApproved: exception_id, decision_id, resolution_id, reviewer identity/role, resolution_note, resolved_at, idempotency key. This is an explicit override and is the only human outcome eligible for downstream delivery.
+- BreakOverridden: exception_id, original_decision_id, resolution_id, reviewer identity/role, severity, resolution_note, resolved_at, idempotency key. This is an immutable human override record; it never deletes or rewrites BreakDetected.
+- EventVerified: for automated passes, includes document_id, decision_id, ruleset/pack version and evaluated_at. For an approved override, emit a separate verification outcome referencing BreakOverridden and the original decision; preserve decision_origin=AUTO_PASS|HUMAN_OVERRIDE so downstream consumers distinguish the paths.
 - ExceptionRejected: exception_id, decision_id, resolution_id, reviewer identity/role, resolution_note, resolved_at. Does not trigger downstream delivery.
+- DocumentFailed: document_id, error_code, stage, safe reason, failed_at. Emit after terminal processing failure and write corresponding message to stream:dead_letter; update document state to FAILED_PROCESSING.
 
 Initial document lifecycle: RECEIVED → EXTRACTION_PENDING → EXTRACTING → NORMALIZED → RECONCILING → VERIFIED or EXCEPTION; exhausted processing failures end in PROCESSING_FAILED with a DLQ reference. Exception lifecycle: OPEN → APPROVED or REJECTED (terminal in MVP). Delivery lifecycle is separate: NOT_ELIGIBLE or PENDING → DELIVERING → DELIVERED, RETRYING, or FAILED. Repeated resolution requests with the same idempotency key return the original result; conflicting terminal transitions are rejected and audited.
 
@@ -157,18 +161,18 @@ Threat scenarios and required mitigations to plan/test:
 These are recommended MVP defaults, not accepted decisions. Record each as an individual ADR with context, options, decision, consequences, and status Proposed until the maintainer signs off.
 
 ### ADR-001 — Versioned event contracts and delivery
-- Proposed: keep a shared Pydantic envelope with schema version, event ID/type, occurrence time, correlation ID, retry count, trusted tenant/security context, and typed payload.
-- Proposed events: DocumentUploaded, EventNormalized, EventVerified, BreakDetected, ManuallyApproved, and ExceptionRejected. Approval and rejection are distinct terminal events; only ManuallyApproved is deliverable downstream.
-- Proposed delivery: Redis Streams consumer groups, acknowledge only after durable processing/outbox or idempotent state commit, bounded retries, then DLQ with original event ID/correlation and safe error code. Consumers deduplicate by event ID and business idempotency key.
+- Proposed: keep a strict shared Pydantic BaseEvent envelope with event_id, correlation_id, schema_version, pack_version, retry_count, timestamp, trusted security_context, typed payload, and optional causation_id.
+- Proposed events: DocumentUploaded, EventNormalized, EventVerified, BreakDetected, BreakOverridden, ExceptionRejected, and DocumentFailed. Terminal processing failures update state and emit DocumentFailed as well as entering the DLQ. A human override preserves BreakDetected and emits BreakOverridden plus a verification outcome with decision_origin=HUMAN_OVERRIDE; it is never misrepresented as an automated pass.
+- Proposed delivery: Redis Streams consumer groups, acknowledge only after durable processing/outbox or idempotent state commit, bounded retries (three attempts), then DLQ with original event ID/correlation and safe error code. Consumers deduplicate by event ID and business idempotency key.
 - Consequence: replay must preserve the original event/rules/schema versions and cannot duplicate decisions or external effects.
 - Status: Proposed; confirm acknowledgment/outbox and replay semantics.
 
 ### ADR-002 — Extraction confidence and evidence
-- Proposed: every extracted field carries value, confidence in [0,1], short source_quote, and evidence_id. overall_confidence is the minimum confidence among schema-required fields.
+- Proposed: every extracted field carries value, confidence in [0,1], structured evidence {quote, page}, and evidence_id. overall_confidence is the minimum confidence among schema-required fields.
 - Proposed gate: if any required field is below 0.85, create LOW_CONFIDENCE_EXTRACTION and skip business rules; retain optional-field confidence, but gate if a rule requires that optional field.
-- Proposed: every rule result references the exact fields/evidence used. Quotes are evidence locators, not proof of correctness.
+- Proposed: every rule result references the exact fields/evidence used. Quotes are evidence locators, not proof of correctness. Authenticated, tenant-scoped raw-PDF download is restricted to OPS_ANALYST+; raw objects expire after 30 days.
 - Consequence: pack schemas must explicitly identify required fields and golden fixtures must score each required field.
-- Status: Proposed; confirm required-field policy and evidence retention/access.
+- Status: Proposed; 30-day raw retention and analyst+ access are MVP defaults; confirm evidence metadata retention and deletion behavior.
 
 ### ADR-003 — Tenant isolation, authorization, and audit
 - Proposed: API key resolves to immutable tenant/actor/type/role context at ingestion; never trust payload tenant IDs. Every tenant-owned query includes tenant_id and every audit/event carries the trusted context.
@@ -180,17 +184,17 @@ These are recommended MVP defaults, not accepted decisions. Record each as an in
 ### ADR-004 — Domain packs, rules, and master data
 - Proposed: a pack consists of a Pydantic extraction schema, declarative YAML rule set, pack metadata/version, seed records, and golden examples. YAML supports only an allowlisted deterministic operator set; no executable expressions or arbitrary imports.
 - Proposed: ruleset and schema versions are pinned on each document at normalization/reconciliation so replay is reproducible.
-- Proposed: use Decimal and explicit currency/tax semantics. Freight MVP includes shipment/PRO and BOL identifiers, route parties/locations, service/dates, detailed charge lines, fuel surcharge, tax, subtotal, total, and credits.
-- Proposed: ship seed data plus a documented tenant-scoped CLI/import upsert for master corrections; no full CRUD UI.
+- Proposed: freight MVP covers LTL/TL only; use po_number as primary lookup key and bol_number as fallback, emitting MISSING_SHIPMENT_REFERENCE when both are absent. Preserve distinct typed references, role-based parties/locations, dates, service, and extensible charge lines. Use Decimal and ISO 4217 currency with explicit tax/credit/discount semantics.
+- Proposed: expose idempotent POST /master-records/{domain_id}/upsert for TENANT_ADMIN/OPS_MANAGER; make seed calls the same operation. Store a MASTER_DATA_UPSERTED append-only audit event with before/after JSONB snapshots. No full CRUD UI.
 - Consequence: pack authors need contract validation and versioned golden fixtures; changing a rule does not silently alter an in-flight result.
-- Status: Proposed; review freight fields against representative PDFs and confirm rule grammar/money semantics.
+- Status: Proposed; review LTL/TL golden examples, PO/BOL lookup availability, rule grammar, and currency-aware precision/tolerance.
 
 ### ADR-005 — Human override and downstream webhook
-- Proposed: reviewer approval is an explicit override of the recorded automated break, with mandatory note and actor/role/time; it does not mutate the original rule outcome. Rejection is terminal and emits ExceptionRejected without downstream delivery. Correct-and-rerun is deferred.
-- Proposed: only ManuallyApproved can trigger delivery. Persist a tenant-scoped idempotency key/outbox record before sending; retries reuse the same key and signature.
-- Proposed: configure destinations through trusted tenant administration, require HTTPS, block loopback/private/link-local/metadata targets and redirects to them, sign payloads, protect secrets, and set a bounded retry policy.
+- Proposed roles: INGEST_CLIENT uploads only; OPS_ANALYST views queue and resolves WARNING breaks; OPS_MANAGER/TENANT_ADMIN may override BLOCKING breaks with a non-empty resolution_note. Enforce least privilege and tenant scope on every action.
+- Proposed override: preserve BreakDetected; append APPROVED_OVERRIDE audit entry; emit BreakOverridden and a distinct EventVerified outcome with decision_origin=HUMAN_OVERRIDE. Automated passes use decision_origin=AUTO_PASS. This preserves downstream compatibility while making human approval explicit and auditable. Rejection emits ExceptionRejected and never triggers delivery.
+- Proposed delivery: only eligible EventVerified outcomes (AUTO_PASS or HUMAN_OVERRIDE) enter the outbox. Configure destinations through trusted tenant administration; require HTTPS; resolve and validate every address, block loopback/private/link-local/metadata IPs, revalidate redirects, sign payload with HMAC-SHA256, and protect secrets. Any 2xx within a 5-second timeout succeeds; make three attempts with exponential backoff (10s, 60s, 300s).
 - Consequence: downstream delivery is at-least-once transport with idempotent receiver semantics; failure remains visible and does not undo approval.
-- Status: Proposed; confirm role matrix, webhook success/retry policy, and destination-management boundary.
+- Status: Proposed; confirm severity model, role matrix, callback payload, and destination-management boundary.
 
 ### ADR-006 — LLM boundary and untrusted documents
 - Proposed: isolate an extraction/explanation provider interface outside reconciliation. Treat document text as untrusted data, constrain outputs to the active schema, validate after generation, and never let the model choose rules, tenant, role, or final decision.
@@ -200,16 +204,13 @@ These are recommended MVP defaults, not accepted decisions. Record each as an in
 
 ## 13. Remaining decisions before contract freeze
 
-- Confirm field-level confidence plus overall minimum-of-required-fields rule and whether any exceptions are needed.
-- Confirm per-field source quote/evidence IDs and retention/access rules.
-- Review [freight field research](FREIGHT_FIELD_RESEARCH.md) against representative invoice examples; decide required reference keys, charge/tax/currency semantics, and parcel/LTL/TL coverage.
-- Select domain pack authority when client request and tenant configuration differ.
-- Set PDF size/page and raw retention defaults.
-- Confirm reviewer role matrix and approval override semantics.
-- Confirm event payload required/optional fields, terminal failure representation, and rejection event.
-- Define webhook destination trust, signing, SSRF protections, success response, and retry window.
-- Decide how in-flight documents pin schema/rules versions during replay.
-- Confirm master data upsert CLI/API boundary and audit behavior.
+- Confirm evidence metadata retention and deletion audit details; raw PDF access and 30-day TTL are proposed defaults.
+- Review [freight field research](FREIGHT_FIELD_RESEARCH.md) against representative LTL/TL invoices; confirm PO-primary/BOL-fallback coverage and currency-aware comparison tolerance.
+- Confirm severity taxonomy and OPS_ANALYST / OPS_MANAGER / TENANT_ADMIN permissions, including override review controls.
+- Confirm exact event compatibility behavior for HUMAN_OVERRIDE EventVerified and DocumentFailed with DLQ.
+- Define webhook DNS rebinding/redirect protections and whether the stored endpoint secret rotates.
+- Confirm pack version availability/retention policy for historical replay.
+- Confirm master-data upsert uniqueness key and before/after audit retention.
 
 ## 14. Delivery plan
 
