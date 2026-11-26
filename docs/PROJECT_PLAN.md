@@ -108,9 +108,9 @@ Services communicate asynchronously and never import another service implementat
 
 ### Freight invoice pack — proposed MVP extraction fields
 
-Header: carrier legal name/ID, invoice number/date, currency, purchase order number, shipment/PRO number, bill of lading number, service level, payment terms, ship date, delivery date, origin, destination, shipper, consignee, and reference numbers.
+See [Freight Invoice Field Research](FREIGHT_FIELD_RESEARCH.md) for the source review and proposed field semantics. In brief: invoice number, invoice date, total amount, and currency form the core financial identity; carrier identity should resolve to a tenant carrier record, preferring SCAC where present. Model BOL, shipment ID, PRO/carrier reference, load, and PO as distinct typed references, with field requirements determined by the tenant's matching rules. Keep shipper, consignee, bill-to, origin, and destination as role-based party/location structures; date fields carry their business qualifier.
 
-Charges: line-level charge code/description, quantity/unit, rate, amount, accessorial charges, fuel surcharge basis/rate/amount, tax jurisdiction/rate/amount, subtotal, total, and any credits/discounts. Preserve line-level field confidence and source quote. Treat this as the MVP extraction contract to review against the intended freight invoice examples before freezing the pack; do not claim full EDI-210 compliance without a separate mapping review.
+Represent charges as an extensible repeated line-item collection with source code/description, normalized category, amount/currency, and optional quantity, unit, rate, tax, discount, or credit attributes. Preserve unknown carrier codes and raw extracted values alongside normalized values, confidence, and evidence. Do not require linehaul and fuel surcharge on every invoice or force all extracted amounts to two decimals before reconciliation. Treat field tiers as pack policy rather than universal X12 requirements; validate the profile against representative carrier invoices before freezing it and do not claim full EDI-210 compliance without a separate mapping review.
 
 Rules: PO exists for tenant; carrier and shipment references match contracted data where available; surcharge is within contracted cap; line extensions and subtotal/total reconcile using Decimal within $0.05; currency/tax semantics are explicit.
 
@@ -202,7 +202,7 @@ These are recommended MVP defaults, not accepted decisions. Record each as an in
 
 - Confirm field-level confidence plus overall minimum-of-required-fields rule and whether any exceptions are needed.
 - Confirm per-field source quote/evidence IDs and retention/access rules.
-- Review freight field list against representative invoice examples; decide exact charge/tax/currency semantics.
+- Review [freight field research](FREIGHT_FIELD_RESEARCH.md) against representative invoice examples; decide required reference keys, charge/tax/currency semantics, and parcel/LTL/TL coverage.
 - Select domain pack authority when client request and tenant configuration differ.
 - Set PDF size/page and raw retention defaults.
 - Confirm reviewer role matrix and approval override semantics.
