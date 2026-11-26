@@ -152,14 +152,51 @@ Threat scenarios and required mitigations to plan/test:
 5. Malformed/replayed events: validate envelope/version, enforce idempotency, scope by tenant, and bound retries/DLQ.
 6. Sensitive evidence exposure: role-check exception detail access, minimize excerpts, redact logs, and define retention/deletion behavior.
 
-## 12. Proposed architecture decisions to record before implementation
+## 12. Proposed ADRs for review before implementation
 
-1. ADR-001 Event delivery/idempotency: stream names, consumer groups, acknowledgment timing, retry/backoff, DLQ envelope, duplicates, and replay.
-2. ADR-002 Tenant isolation/security: API key mapping, event trust, tenant predicates, RLS decision, role matrix.
-3. ADR-003 Document/evidence/audit retention: raw storage abstraction, retention/deletion, evidence access, append-only semantics.
-4. ADR-004 Pack/rule contract: YAML grammar, supported operators, versioning, validation, money/date/currency semantics.
-5. ADR-005 Human resolution/downstream: explicit override semantics, approve/reject events, role matrix, webhook security/idempotency/retries.
-6. ADR-006 LLM boundary: structured-output interface, prompt/data separation, timeout/cost/retry controls, prompt version, fallback and mocked tests.
+These are recommended MVP defaults, not accepted decisions. Record each as an individual ADR with context, options, decision, consequences, and status Proposed until the maintainer signs off.
+
+### ADR-001 — Versioned event contracts and delivery
+- Proposed: keep a shared Pydantic envelope with schema version, event ID/type, occurrence time, correlation ID, retry count, trusted tenant/security context, and typed payload.
+- Proposed events: DocumentUploaded, EventNormalized, EventVerified, BreakDetected, ManuallyApproved, and ExceptionRejected. Approval and rejection are distinct terminal events; only ManuallyApproved is deliverable downstream.
+- Proposed delivery: Redis Streams consumer groups, acknowledge only after durable processing/outbox or idempotent state commit, bounded retries, then DLQ with original event ID/correlation and safe error code. Consumers deduplicate by event ID and business idempotency key.
+- Consequence: replay must preserve the original event/rules/schema versions and cannot duplicate decisions or external effects.
+- Status: Proposed; confirm acknowledgment/outbox and replay semantics.
+
+### ADR-002 — Extraction confidence and evidence
+- Proposed: every extracted field carries value, confidence in [0,1], short source_quote, and evidence_id. overall_confidence is the minimum confidence among schema-required fields.
+- Proposed gate: if any required field is below 0.85, create LOW_CONFIDENCE_EXTRACTION and skip business rules; retain optional-field confidence, but gate if a rule requires that optional field.
+- Proposed: every rule result references the exact fields/evidence used. Quotes are evidence locators, not proof of correctness.
+- Consequence: pack schemas must explicitly identify required fields and golden fixtures must score each required field.
+- Status: Proposed; confirm required-field policy and evidence retention/access.
+
+### ADR-003 — Tenant isolation, authorization, and audit
+- Proposed: API key resolves to immutable tenant/actor/type/role context at ingestion; never trust payload tenant IDs. Every tenant-owned query includes tenant_id and every audit/event carries the trusted context.
+- Proposed: start with explicit tenant predicates and negative cross-tenant tests; evaluate PostgreSQL RLS before pilot exposure as defense in depth, accounting for connection-pool context reset.
+- Proposed: application audit interface is append-only; service DB roles cannot update/delete audit rows. Record original automated decision separately from human resolution.
+- Consequence: tenant context must be explicit in repository/service APIs; migration and pool tests become security acceptance criteria.
+- Status: Proposed; finalize role matrix, RLS decision, and tamper-evidence/retention requirements.
+
+### ADR-004 — Domain packs, rules, and master data
+- Proposed: a pack consists of a Pydantic extraction schema, declarative YAML rule set, pack metadata/version, seed records, and golden examples. YAML supports only an allowlisted deterministic operator set; no executable expressions or arbitrary imports.
+- Proposed: ruleset and schema versions are pinned on each document at normalization/reconciliation so replay is reproducible.
+- Proposed: use Decimal and explicit currency/tax semantics. Freight MVP includes shipment/PRO and BOL identifiers, route parties/locations, service/dates, detailed charge lines, fuel surcharge, tax, subtotal, total, and credits.
+- Proposed: ship seed data plus a documented tenant-scoped CLI/import upsert for master corrections; no full CRUD UI.
+- Consequence: pack authors need contract validation and versioned golden fixtures; changing a rule does not silently alter an in-flight result.
+- Status: Proposed; review freight fields against representative PDFs and confirm rule grammar/money semantics.
+
+### ADR-005 — Human override and downstream webhook
+- Proposed: reviewer approval is an explicit override of the recorded automated break, with mandatory note and actor/role/time; it does not mutate the original rule outcome. Rejection is terminal and emits ExceptionRejected without downstream delivery. Correct-and-rerun is deferred.
+- Proposed: only ManuallyApproved can trigger delivery. Persist a tenant-scoped idempotency key/outbox record before sending; retries reuse the same key and signature.
+- Proposed: configure destinations through trusted tenant administration, require HTTPS, block loopback/private/link-local/metadata targets and redirects to them, sign payloads, protect secrets, and set a bounded retry policy.
+- Consequence: downstream delivery is at-least-once transport with idempotent receiver semantics; failure remains visible and does not undo approval.
+- Status: Proposed; confirm role matrix, webhook success/retry policy, and destination-management boundary.
+
+### ADR-006 — LLM boundary and untrusted documents
+- Proposed: isolate an extraction/explanation provider interface outside reconciliation. Treat document text as untrusted data, constrain outputs to the active schema, validate after generation, and never let the model choose rules, tenant, role, or final decision.
+- Proposed: version prompts/schema/provider settings; enforce timeout and bounded retry/cost limits; use deterministic mocks in tests and a safe explanation fallback.
+- Consequence: provider-specific code stays in extraction/triage adapters and is replaceable without changing the deterministic engine.
+- Status: Proposed; select provider configuration and decide timeout/cost defaults before the extraction story is Ready.
 
 ## 13. Remaining decisions before contract freeze
 
