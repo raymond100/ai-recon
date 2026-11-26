@@ -1,6 +1,6 @@
 # Freight Invoice Field Research
 
-Status: Domain research for planning; proposed pack decisions require maintainer review  
+Status: Domain research and proposed MVP defaults; requires maintainer sign-off  
 Last updated: 2026-11-26
 
 ## Purpose and boundary
@@ -29,10 +29,11 @@ Use tiering as a product-pack policy, not as a claim that X12 or every carrier r
 
 ### Core identity and reconciliation fields
 - `invoice_number`: required; source-assigned invoice identifier.
-- `invoice_date`: conditionally required where present in the source/tenant workflow; separate from shipment dates.
-- `total_amount` and `currency`: required for financial reconciliation; preserve Decimal precision and source currency.
-- `carrier`: require a resolvable carrier identity for carrier-specific rate checks; prefer SCAC when available, but permit another tenant-known identifier plus legal/display name.
-- `shipment_references[]`: extract typed references (BOL, PRO/carrier reference, shipment ID, load, PO); require the particular key only when the tenant's configured matching rule needs it.
+- `invoice_date`: required when present in the source workflow; separate from shipment dates.
+- `total_amount` and `currency`: required for financial reconciliation; preserve Decimal precision and ISO 4217 currency code.
+- `carrier`: require a resolvable carrier identity for rate checks; prefer SCAC when available, but permit another tenant-known identifier plus legal/display name.
+- `po_number`: required primary lookup key for the MVP LTL/TL profile.
+- `bol_number`: required fallback lookup key when PO is missing or unavailable; keep PRO, shipment ID, and load number as separate optional typed references. Tenant rules may use additional references without changing the shared schema.
 
 ### Common matching and explanation fields
 - Shipment method of payment (X12 element 146), pickup/ship/delivery dates with qualifiers, shipper/consignee/bill-to parties, origin/destination locations, total weight and unit, pieces, service level, and freight class when shown.
@@ -55,7 +56,13 @@ Use tiering as a product-pack policy, not as a claim that X12 or every carrier r
 - Which matching references will the pilot master data provide (PO, BOL, PRO, load, shipment ID), and which are mandatory by tenant/rule?
 - Which charge taxonomy and tax/discount/credit treatment are needed for the pilot?
 - What currency rounding and reconciliation tolerance should apply per currency and rule?
-- Do we include parcel invoices in the first freight pack, or limit to motor-carrier LTL/TL invoices?
+- MVP mode coverage is limited to LTL/TL; parcel invoices are deferred because their charge patterns add scope. Expand only after a separate corpus and charge taxonomy are agreed.
+
+## Proposed MVP operating defaults
+
+- Freight coverage: LTL/TL invoices only. Model `base_freight`, `fuel_surcharge`, `accessorials[]`, `tax_amount`, and `total_amount` as Decimal values with explicit currency; use general charge-line structures underneath so carrier-specific codes remain available.
+- Lookup policy: `po_number` is the primary lookup key; `bol_number` is the fallback. Treat missing both as a deterministic `MISSING_SHIPMENT_REFERENCE` break. Keep both independently extractable and preserve all other references.
+- Money: use ISO 4217 currency codes and Decimal. No float and no hard-coded two-decimal truncation. Establish currency/rule-specific comparison precision and tolerance before enabling auto-verification.
 
 ## Sources and limits
 
