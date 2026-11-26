@@ -29,7 +29,7 @@ Only eligible EventVerified outcomes enter the durable outbox. Tenant administra
 
 ## Data ownership
 
-Owns exception queue projection, human resolutions, actor/audit records, endpoint configuration references, delivery outbox and attempts, and reviewer-facing explanation. Audit records are append-only; routine DB role cannot update/delete audit rows. Master-data upsert may be served here initially but remains a separate application boundary.
+Owns exception queue projection, human resolutions, actor/audit records, tenant master-data admin API, endpoint configuration references, delivery outbox and attempts, and reviewer-facing explanation. Reconciliation receives a read-only master-data repository interface; it does not own master-data mutation endpoints. Audit records are append-only; routine DB role cannot update/delete audit rows.
 
 ## Security and observability
 
